@@ -288,6 +288,3 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     };
   }
 };
-
-// Export the handler
-export { handler };
