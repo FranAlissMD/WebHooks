@@ -116,7 +116,7 @@ function formatAdoEventCard(payload: AdoPayload): GoogleChatCardPayload | null {
                 work_item_link = resource._links?.html?.href ?? resource.url ?? '#';
             }
 
-            const tag_to_find = 'test tag';
+            const tag_to_find = '@Francisco Aliss';
             console.log(`Checking comment for WI #${wi_id}. Text: '${comment_text}'`); // Keep debug log
             if (comment_text.includes(tag_to_find)) {
                 console.log(`Tag '${tag_to_find}' FOUND for WI #${wi_id}. Formatting card.`);
