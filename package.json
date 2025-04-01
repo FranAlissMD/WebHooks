@@ -1,0 +1,21 @@
+{
+    "name": "ado-webhook-netlify",
+    "version": "1.0.0",
+    "description": "Azure DevOps Webhook handler for Netlify",
+    "main": "index.js",
+    "scripts": {
+        "build": "tsc"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "@netlify/functions": "^2.0.0",
+        "node-fetch": "^3.0"
+    },
+    "devDependencies": {
+        "@types/node": "^18.0.0",
+        "typescript": "^5.0.0"
+    },
+    "type": "module"
+}
