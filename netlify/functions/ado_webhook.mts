@@ -186,42 +186,84 @@ function formatAdoEventCard(payload: AdoPayload): GoogleChatCardPayload | null {
 
 // --- Netlify Function Handler ---
 export const handler: Handler = async (event: HandlerEvent, context: HandlerContext) => {
-  console.log("Handler execution started."); // Use console.log for Netlify logs
+  console.log("Handler execution started.");
 
-  if (event.httpMethod !== 'POST') {
+  if (event.httpMethod !== "POST") {
     console.warn(`Received non-POST request: ${event.httpMethod}`);
     return {
       statusCode: 405,
-      body: JSON.stringify({ status: 'error', message: 'Method Not Allowed' }),
+      body: JSON.stringify({ status: "error", message: "Method Not Allowed" }),
     };
   }
 
   // --- Security Validation: Basic Authentication ---
+  // --- Security Validation: Basic Authentication ---
   let authPassed = false;
-  const authHeader = event.headers.authorization; // Headers might be lowercase
+  // Try accessing header case-insensitively (check lowercase first, then uppercase)
+  const authHeader = event.headers.authorization || event.headers.Authorization;
 
   if (ADO_WEBHOOK_USER && ADO_WEBHOOK_PASS) {
-    if (authHeader && authHeader.toLowerCase().startsWith('basic ')) {
+    // Check if header exists and starts with 'basic ' (case-insensitive check)
+    if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
       try {
         console.log("Attempting Basic Auth decoding.");
-        const encodedCredentials = authHeader.split(' ', 1)[1];
-        const decodedCredentials = Buffer.from(encodedCredentials, 'base64').toString('utf-8');
-        const [username, password] = decodedCredentials.split(':', 1);
+        // Correctly split into 'Basic' and 'Credentials', limit to 2 parts
+        const parts = authHeader.split(" ", 2);
+        if (parts.length === 2) {
+          const encodedCredentials = parts[1];
+          // Ensure encodedCredentials is a non-empty string before decoding
+          if (encodedCredentials && typeof encodedCredentials === "string") {
+            const decodedCredentials = Buffer.from(
+              encodedCredentials,
+              "base64"
+            ).toString("utf-8");
+            // Split into username and password (only at the first colon)
+            const credentialParts = decodedCredentials.split(":", 2);
+            if (credentialParts.length === 2) {
+              const username = credentialParts[0];
+              const password = credentialParts[1];
 
-        if (username === ADO_WEBHOOK_USER && password === ADO_WEBHOOK_PASS) {
-          console.log("Basic Authentication successful.");
-          authPassed = true;
+              if (
+                username === ADO_WEBHOOK_USER &&
+                password === ADO_WEBHOOK_PASS
+              ) {
+                console.log("Basic Authentication successful.");
+                authPassed = true;
+              } else {
+                console.warn(
+                  "Basic Authentication failed: Credentials mismatch."
+                );
+              }
+            } else {
+              console.warn(
+                "Basic Authentication failed: Decoded credentials format invalid (missing colon?)."
+              );
+            }
+          } else {
+            console.warn(
+              "Basic Authentication failed: Encoded credentials part is empty or not a string."
+            );
+          }
         } else {
-          console.warn("Basic Authentication failed: Credentials mismatch.");
+          console.warn(
+            "Basic Authentication failed: Authorization header format invalid (missing space?)."
+          );
         }
       } catch (error) {
+        // Catch errors during decoding/splitting
         console.error(`Error decoding/parsing Basic Auth header: ${error}`);
       }
     } else {
-      console.warn("Basic Authentication failed: Missing or invalid Authorization header.");
+      // Header missing or doesn't start with 'basic '
+      console.warn(
+        "Basic Authentication failed: Missing or invalid Authorization header format."
+      );
     }
   } else {
-    console.error("Basic Authentication environment variables (ADO_WEBHOOK_USER, ADO_WEBHOOK_PASS) are not configured.");
+    // Required environment variables are missing
+    console.error(
+      "Basic Authentication environment variables (ADO_WEBHOOK_USER, ADO_WEBHOOK_PASS) are not configured."
+    );
     // Keep authPassed = false, access will be denied
   }
 
@@ -229,7 +271,10 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
     console.error("Webhook Authentication Failed.");
     return {
       statusCode: 401, // Unauthorized
-      body: JSON.stringify({ status: 'error', message: 'Authentication Required' }),
+      body: JSON.stringify({
+        status: "error",
+        message: "Authentication Required",
+      }),
     };
   }
   // --- End Security Validation ---
@@ -237,20 +282,27 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
   // --- Process Payload if Auth Passed ---
   try {
     // event.body is null if no body, use '{}' as default string
-    const payloadString = event.body ?? '{}';
+    const payloadString = event.body ?? "{}";
     const payload: AdoPayload = JSON.parse(payloadString);
-    const eventTypeReceived = payload.eventType ?? 'unknown';
+    const eventTypeReceived = payload.eventType ?? "unknown";
     console.log(`Webhook received for event type: ${eventTypeReceived}`);
 
     if (!GOOGLE_CHAT_WEBHOOK_URL) {
-      console.error("Google Chat Webhook URL is not configured, cannot send notification.");
+      console.error(
+        "Google Chat Webhook URL is not configured, cannot send notification."
+      );
       return {
         statusCode: 500, // Internal Server Error - configuration issue
-        body: JSON.stringify({ status: 'error', message: 'Webhook processor configuration error' }),
+        body: JSON.stringify({
+          status: "error",
+          message: "Webhook processor configuration error",
+        }),
       };
     }
 
-    console.log(`Formatting message for Google Chat (if applicable) for ${eventTypeReceived}...`);
+    console.log(
+      `Formatting message for Google Chat (if applicable) for ${eventTypeReceived}...`
+    );
     const chatPayload = formatAdoEventCard(payload); // Might return null
 
     if (chatPayload) {
@@ -260,31 +312,49 @@ export const handler: Handler = async (event: HandlerEvent, context: HandlerCont
       if (sendSuccess) {
         return {
           statusCode: 200,
-          body: JSON.stringify({ status: 'success', message: 'Webhook received and notification sent' }),
+          body: JSON.stringify({
+            status: "success",
+            message: "Webhook received and notification sent",
+          }),
         };
       } else {
         return {
           statusCode: 500, // Internal Server Error communicating with Chat
-          body: JSON.stringify({ status: 'error', message: 'Webhook received but failed to send notification to Google Chat' }),
+          body: JSON.stringify({
+            status: "error",
+            message:
+              "Webhook received but failed to send notification to Google Chat",
+          }),
         };
       }
     } else {
       // No payload formatted (event not handled, or comment didn't contain the tag)
-      console.log("No notification required for this specific event/condition.");
+      console.log(
+        "No notification required for this specific event/condition."
+      );
       return {
         statusCode: 200,
-        body: JSON.stringify({ status: 'success', message: 'Webhook received, no notification required' }),
+        body: JSON.stringify({
+          status: "success",
+          message: "Webhook received, no notification required",
+        }),
       };
     }
-
   } catch (error) {
     // Catch errors during JSON parsing or general processing
-    console.error(`Error processing webhook payload or formatting message: ${error}`);
+    console.error(
+      `Error processing webhook payload or formatting message: ${error}`
+    );
     // Maybe try sending a basic error message to chat if possible
-    await sendToGoogleChat({text: `DEBUG ERROR: Exception during handler processing: ${error}`});
+    await sendToGoogleChat({
+      text: `DEBUG ERROR: Exception during handler processing: ${error}`,
+    });
     return {
       statusCode: 500, // Internal Server Error
-      body: JSON.stringify({ status: 'error', message: 'Internal Server Error processing webhook' }),
+      body: JSON.stringify({
+        status: "error",
+        message: "Internal Server Error processing webhook",
+      }),
     };
   }
 };
