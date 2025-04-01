@@ -91,7 +91,7 @@ def format_ado_event_card(payload):
              work_item_link = resource.get('_links', {}).get('html', {}).get('href', resource.get('url', '#'))
 
         # <<< CONDITION: Only format if the specific tag is in the comment >>>
-        tag_to_find = '@Hans Stechl2'
+        tag_to_find = '@Francisco Aliss'
         if tag_to_find in comment_text:
             logging.info(f"Tag '{tag_to_find}' found in comment for WI #{wi_id}. Formatting card.")
             card_header = {
