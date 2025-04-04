@@ -4,13 +4,12 @@ import type { Handler, HandlerEvent, HandlerContext } from "@netlify/functions";
 import fetch from "node-fetch"; // Using node-fetch v3 for ESM compatibility
 import { Buffer } from "node:buffer"; // For Base64 decoding
 
-// --- Environment Variables ---
+
 const GOOGLE_CHAT_WEBHOOK_HANS = process.env.GOOGLE_CHAT_WEBHOOK_HANS;
 const GOOGLE_CHAT_WEBHOOK_ALEXIS = process.env.GOOGLE_CHAT_WEBHOOK_ALEXIS;
-const CHAT_USER_ID_HANS = "110089480014983777747";
-const CHAT_USER_ID_ALEXIS = "111538330948035296439";
+const GOOGLE_CHAT_WEBHOOK_JUSTIN = process.env.GOOGLE_CHAT_WEBHOOK_JUSTIN;
 const ADO_WEBHOOK_USER = process.env.ADO_WEBHOOK_USER;
-const ADO_WEBHOOK_PASS = process.env.ADO_WEBHOOK_PASS;
+const ADO_WEBHOOK_PASS = process.env.ADO_WEBHOOK_PASS; // Use PAT for better security
 
 // --- Types ---
 interface AdoPayload {
@@ -43,8 +42,11 @@ interface GoogleChatSimpleText {
   text: string;
 }
 
+// Type for identifying the target user/webhook
+type TargetUser = "hans" | "alexis" | "justin" | null;
+
 interface FormatResult {
-  targetUser: "hans" | "alexis" | null;
+  targetUser: TargetUser;
   payload: GoogleChatCardPayload | null;
 }
 
@@ -59,22 +61,20 @@ async function sendToGoogleChat(
     );
     return false;
   }
-
   const headers = { "Content-Type": "application/json; charset=UTF-8" };
   try {
+    // Log only prefix of URL for security/brevity
     console.log(
       `Attempting to send payload to Google Chat URL: ${targetWebhookUrl.substring(
         0,
         50
       )}...`
-    ); // Log only prefix
-    // console.debug("Outgoing Payload:", JSON.stringify(messagePayload)); // Optional: Log full payload if needed for deep debug
+    );
     const response = await fetch(targetWebhookUrl, {
       method: "POST",
       headers: headers,
       body: JSON.stringify(messagePayload),
     });
-
     if (!response.ok) {
       const errorBody = await response.text();
       console.error(
@@ -105,7 +105,7 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
   }
 
   let cardPayload: GoogleChatCardPayload | null = null;
-  let targetUser: FormatResult["targetUser"] = null; // Default target is null
+  let targetUser: TargetUser = null; // Determine target for routing
 
   try {
     if (eventType === "workitem.commented") {
@@ -144,39 +144,42 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         work_item_link = resource._links?.html?.href ?? resource.url ?? "#";
       }
 
-      // --- Check for specific user tags ---
+      // --- Check for specific user tags to determine targetUser ---
       const tagHans = "@Hans Stechl2";
       const tagAlexis = "@Alexis Aguirre";
-      let mentionUserId: string | null = null;
+      const tagJustin = "@Justin Burniske";
 
       console.log(
         `Checking comment for WI #${wi_id}. Text excerpt: '${comment_text.substring(
           0,
           50
         )}...'`
-      ); // Log excerpt
+      );
+
       if (comment_text.includes(tagHans)) {
         targetUser = "hans";
-        mentionUserId = CHAT_USER_ID_HANS;
         console.log(
           `Tag '${tagHans}' FOUND for WI #${wi_id}. Target: ${targetUser}`
         );
       } else if (comment_text.includes(tagAlexis)) {
         targetUser = "alexis";
-        mentionUserId = CHAT_USER_ID_ALEXIS;
         console.log(
           `Tag '${tagAlexis}' FOUND for WI #${wi_id}. Target: ${targetUser}`
         );
+      } else if (comment_text.includes(tagJustin)) {
+        targetUser = "justin";
+        console.log(
+          `Tag '${tagJustin}' FOUND for WI #${wi_id}. Target: ${targetUser}`
+        );
       }
 
-      // If one of the tags was found, format the card
-      if (targetUser && mentionUserId) {
-        const mentionTag = mentionUserId.startsWith("YOUR_")
-          ? ""
-          : `<users/${mentionUserId}> `; // Use mention only if ID is valid
+      // If one of the relevant tags was found, format the card
+      if (targetUser) {
+        // No mention logic needed anymore
 
         const card_header = {
-          title: `${mentionTag}New Comment on ${wi_type} #${wi_id}`,
+          // Simplified title without mention
+          title: `New Comment on ${wi_type} #${wi_id}`,
           subtitle: `${wi_title} | By: ${commenter}`,
           imageUrl: "https://img.icons8.com/color/48/000000/comments.png",
           imageType: "CIRCLE" as const,
@@ -212,12 +215,10 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         };
       } else {
         console.log(
-          `Neither relevant tag found for WI #${wi_id}. Skipping notification.`
+          `None of the relevant tags found for WI #${wi_id}. Skipping notification.`
         );
         // targetUser and cardPayload remain null
       }
-      // Removed the 'git.pullrequest.created' block
-      // } else if (eventType === 'git.pullrequest.created') { ... }
     } else {
       console.log(`Event type '${eventType}' not handled. Skipping.`);
       // targetUser and cardPayload remain null
@@ -226,8 +227,6 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
     console.error(
       `Error during formatAdoEventCard for event ${eventType}: ${error}`
     );
-    // Maybe send error to a default/admin webhook if available?
-    // sendToGoogleChat(ADMIN_WEBHOOK_URL_OR_DEFAULT, {text: `...`});
     targetUser = null;
     cardPayload = null; // Ensure null is returned on error
   }
@@ -326,10 +325,12 @@ export const handler: Handler = async (
   // Fetch specific webhook URLs needed later
   const webhookUrlHans = process.env.GOOGLE_CHAT_WEBHOOK_HANS;
   const webhookUrlAlexis = process.env.GOOGLE_CHAT_WEBHOOK_ALEXIS;
+  const webhookUrlJustin = process.env.GOOGLE_CHAT_WEBHOOK_JUSTIN;
 
-  if (!webhookUrlHans && !webhookUrlAlexis) {
+  // Check if at least one target webhook is configured
+  if (!webhookUrlHans && !webhookUrlAlexis && !webhookUrlJustin) {
     console.error(
-      "No Google Chat Webhook URLs (HANS or ALEXIS) are configured in environment variables."
+      "No Google Chat Webhook URLs (HANS, ALEXIS, or JUSTIN) are configured in environment variables."
     );
     return {
       statusCode: 500,
@@ -359,10 +360,15 @@ export const handler: Handler = async (
     } else if (formatResult.targetUser === "alexis") {
       targetWebhookUrl = webhookUrlAlexis;
       console.log("Determined target user: alexis");
+    } else if (formatResult.targetUser === "justin") {
+      // Added case for Justin
+      targetWebhookUrl = webhookUrlJustin;
+      console.log("Determined target user: justin");
     } else {
       console.log("No specific target user determined by formatter.");
     }
 
+    // Send notification ONLY if a target user was identified, a payload was formatted, AND a URL exists for that target
     if (targetWebhookUrl && formatResult.payload) {
       console.log(
         `Attempting to send formatted card to target: ${formatResult.targetUser}`
@@ -406,10 +412,13 @@ export const handler: Handler = async (
     console.error(
       `Error processing webhook payload or formatting message: ${error}`
     );
-    await sendToGoogleChat(webhookUrlHans || webhookUrlAlexis, {
-      // Send error to first available URL
-      text: `DEBUG ERROR: Exception during handler processing: ${error}`,
-    });
+    // Send error to first available URL as a fallback debug mechanism
+    await sendToGoogleChat(
+      webhookUrlHans || webhookUrlAlexis || webhookUrlJustin,
+      {
+        text: `DEBUG ERROR: Exception during handler processing: ${error}`,
+      }
+    );
     return {
       statusCode: 500,
       body: JSON.stringify({
