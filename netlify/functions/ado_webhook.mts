@@ -4,12 +4,19 @@ import type { Handler, HandlerEvent, HandlerContext } from "@netlify/functions";
 import fetch from "node-fetch"; // Using node-fetch v3 for ESM compatibility
 import { Buffer } from "node:buffer"; // For Base64 decoding
 
-
+// --- Environment Variables & Constants ---
+// Required: Set these Webhook URLs and ADO credentials in Netlify Env Vars
 const GOOGLE_CHAT_WEBHOOK_HANS = process.env.GOOGLE_CHAT_WEBHOOK_HANS;
 const GOOGLE_CHAT_WEBHOOK_ALEXIS = process.env.GOOGLE_CHAT_WEBHOOK_ALEXIS;
 const GOOGLE_CHAT_WEBHOOK_JUSTIN = process.env.GOOGLE_CHAT_WEBHOOK_JUSTIN;
+const GOOGLE_CHAT_WEBHOOK_EFFORT = process.env.GOOGLE_CHAT_WEBHOOK_EFFORT;
 const ADO_WEBHOOK_USER = process.env.ADO_WEBHOOK_USER;
 const ADO_WEBHOOK_PASS = process.env.ADO_WEBHOOK_PASS; // Use PAT for better security
+
+// Hardcoded User IDs (as per previous code structure + new ID for Justin)
+const CHAT_USER_ID_HANS = "110089480014983777747";
+const CHAT_USER_ID_ALEXIS = "111538330948035296439";
+const CHAT_USER_ID_JUSTIN = "114126982067491484128"; // Hardcoded Justin's ID
 
 // --- Types ---
 interface AdoPayload {
@@ -42,12 +49,11 @@ interface GoogleChatSimpleText {
   text: string;
 }
 
-// Type for identifying the target user/webhook
-type TargetUser = "hans" | "alexis" | "justin" | null;
+type TargetUser = "hans" | "alexis" | "justin" | "effort" | null;
 
 interface FormatResult {
   targetUser: TargetUser;
-  payload: GoogleChatCardPayload | null;
+  payload: GoogleChatCardPayload | GoogleChatSimpleText | null;
 }
 
 // --- Helper to Send Message to Google Chat ---
@@ -63,7 +69,6 @@ async function sendToGoogleChat(
   }
   const headers = { "Content-Type": "application/json; charset=UTF-8" };
   try {
-    // Log only prefix of URL for security/brevity
     console.log(
       `Attempting to send payload to Google Chat URL: ${targetWebhookUrl.substring(
         0,
@@ -104,8 +109,9 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
       payload.resourceContainers?.project?.name ?? "Unknown Project";
   }
 
-  let cardPayload: GoogleChatCardPayload | null = null;
-  let targetUser: TargetUser = null; // Determine target for routing
+  let cardOrTextPayload: GoogleChatCardPayload | GoogleChatSimpleText | null =
+    null;
+  let targetUser: TargetUser = null;
 
   try {
     if (eventType === "workitem.commented") {
@@ -144,7 +150,8 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         work_item_link = resource._links?.html?.href ?? resource.url ?? "#";
       }
 
-      // --- Check for specific user tags to determine targetUser ---
+      // --- Check for specific STRINGS or user tags ---
+      const effortString = "Please review the total effort";
       const tagHans = "@Hans Stechl2";
       const tagAlexis = "@Alexis Aguirre";
       const tagJustin = "@Justin Burniske";
@@ -156,83 +163,103 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         )}...'`
       );
 
-      if (comment_text.includes(tagHans)) {
-        targetUser = "hans";
+      // --- PRIORITY 1: Check for Effort Review String ---
+      if (comment_text.includes(effortString)) {
+        targetUser = "effort";
+        // Use the <users/ID> format for Hans, using the hardcoded constant
+        const simpleTextMessage = `<users/${CHAT_USER_ID_HANS}> - ${effortString} - ${work_item_link}`;
+        cardOrTextPayload = { text: simpleTextMessage }; // Format simple text message
         console.log(
-          `Tag '${tagHans}' FOUND for WI #${wi_id}. Target: ${targetUser}`
+          `'${effortString}' FOUND for WI #${wi_id}. Target: ${targetUser}. Formatting simple text with User ID mention.`
         );
-      } else if (comment_text.includes(tagAlexis)) {
-        targetUser = "alexis";
-        console.log(
-          `Tag '${tagAlexis}' FOUND for WI #${wi_id}. Target: ${targetUser}`
-        );
-      } else if (comment_text.includes(tagJustin)) {
-        targetUser = "justin";
-        console.log(
-          `Tag '${tagJustin}' FOUND for WI #${wi_id}. Target: ${targetUser}`
-        );
-      }
 
-      // If one of the relevant tags was found, format the card
-      if (targetUser) {
-        // No mention logic needed anymore
-
-        const card_header = {
-          // Simplified title without mention
-          title: `New Comment on ${wi_type} #${wi_id}`,
-          subtitle: `${wi_title} | By: ${commenter}`,
-          imageUrl: "https://img.icons8.com/color/48/000000/comments.png",
-          imageType: "CIRCLE" as const,
-        };
-        const widgets: any[] = [
-          { textParagraph: { text: `<b>Project:</b> ${project_name}` } },
-          {
-            textParagraph: {
-              text: `<b>Comment:</b><br>${comment_text.replace(/\n/g, "<br>")}`,
-            },
-          },
-        ];
-        if (work_item_link !== "#") {
-          widgets.push({
-            buttonList: {
-              buttons: [
-                {
-                  text: "View Work Item",
-                  onClick: { openLink: { url: work_item_link } },
-                },
-              ],
-            },
-          });
-        }
-        const card_id = `comment-wi-${wi_id}-rev-${resource.rev ?? "N/A"}`;
-        cardPayload = {
-          cardsV2: [
-            {
-              cardId: card_id,
-              card: { header: card_header, sections: [{ widgets }] },
-            },
-          ],
-        };
+        // --- PRIORITY 2: Check for User Tags (only if effort string wasn't found) ---
       } else {
-        console.log(
-          `None of the relevant tags found for WI #${wi_id}. Skipping notification.`
-        );
-        // targetUser and cardPayload remain null
+        let mentionUserId: string | null = null; // Only used to select target
+
+        if (comment_text.includes(tagHans)) {
+          targetUser = "hans";
+          mentionUserId = CHAT_USER_ID_HANS; // Set ID for target determination
+          console.log(
+            `Tag '${tagHans}' FOUND for WI #${wi_id}. Target: ${targetUser}`
+          );
+        } else if (comment_text.includes(tagAlexis)) {
+          targetUser = "alexis";
+          mentionUserId = CHAT_USER_ID_ALEXIS; // Set ID for target determination
+          console.log(
+            `Tag '${tagAlexis}' FOUND for WI #${wi_id}. Target: ${targetUser}`
+          );
+        } else if (comment_text.includes(tagJustin)) {
+          targetUser = "justin";
+          mentionUserId = CHAT_USER_ID_JUSTIN; // Set ID for target determination
+          console.log(
+            `Tag '${tagJustin}' FOUND for WI #${wi_id}. Target: ${targetUser}`
+          );
+        }
+
+        // If one of the user tags was found, format the detailed card (without mention)
+        if (targetUser && mentionUserId) {
+          // Check if a target was identified
+
+          const card_header = {
+            // Simplified title without mention
+            title: `New Comment on ${wi_type} #${wi_id}`,
+            subtitle: `${wi_title} | By: ${commenter}`,
+            imageUrl: "https://img.icons8.com/color/48/000000/comments.png",
+            imageType: "CIRCLE" as const,
+          };
+          const widgets: any[] = [
+            { textParagraph: { text: `<b>Project:</b> ${project_name}` } },
+            {
+              textParagraph: {
+                text: `<b>Comment:</b><br>${comment_text.replace(
+                  /\n/g,
+                  "<br>"
+                )}`,
+              },
+            },
+          ];
+          if (work_item_link !== "#") {
+            widgets.push({
+              buttonList: {
+                buttons: [
+                  {
+                    text: "View Work Item",
+                    onClick: { openLink: { url: work_item_link } },
+                  },
+                ],
+              },
+            });
+          }
+          const card_id = `comment-wi-${wi_id}-rev-${resource.rev ?? "N/A"}`;
+          cardOrTextPayload = {
+            cardsV2: [
+              {
+                cardId: card_id,
+                card: { header: card_header, sections: [{ widgets }] },
+              },
+            ],
+          };
+        } else {
+          // Neither effort string nor user tag found
+          console.log(
+            `Neither effort string nor relevant tags found for WI #${wi_id}. Skipping notification.`
+          );
+        }
       }
     } else {
       console.log(`Event type '${eventType}' not handled. Skipping.`);
-      // targetUser and cardPayload remain null
     }
   } catch (error) {
     console.error(
       `Error during formatAdoEventCard for event ${eventType}: ${error}`
     );
     targetUser = null;
-    cardPayload = null; // Ensure null is returned on error
+    cardOrTextPayload = null;
   }
 
   // Return the result object
-  return { targetUser, payload: cardPayload };
+  return { targetUser, payload: cardOrTextPayload };
 }
 
 // --- Netlify Function Handler ---
@@ -253,7 +280,6 @@ export const handler: Handler = async (
   // --- Security Validation: Basic Authentication ---
   let authPassed = false;
   const authHeader = event.headers.authorization || event.headers.Authorization;
-
   if (ADO_WEBHOOK_USER && ADO_WEBHOOK_PASS) {
     if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
       try {
@@ -326,11 +352,17 @@ export const handler: Handler = async (
   const webhookUrlHans = process.env.GOOGLE_CHAT_WEBHOOK_HANS;
   const webhookUrlAlexis = process.env.GOOGLE_CHAT_WEBHOOK_ALEXIS;
   const webhookUrlJustin = process.env.GOOGLE_CHAT_WEBHOOK_JUSTIN;
+  const webhookUrlEffort = process.env.GOOGLE_CHAT_WEBHOOK_EFFORT;
 
   // Check if at least one target webhook is configured
-  if (!webhookUrlHans && !webhookUrlAlexis && !webhookUrlJustin) {
+  if (
+    !webhookUrlHans &&
+    !webhookUrlAlexis &&
+    !webhookUrlJustin &&
+    !webhookUrlEffort
+  ) {
     console.error(
-      "No Google Chat Webhook URLs (HANS, ALEXIS, or JUSTIN) are configured in environment variables."
+      "No Google Chat Webhook URLs (HANS, ALEXIS, JUSTIN, or EFFORT) are configured in environment variables."
     );
     return {
       statusCode: 500,
@@ -353,6 +385,7 @@ export const handler: Handler = async (
     );
     const formatResult = formatAdoEventCard(payload);
 
+    // Determine the actual webhook URL to use based on the target user/type
     let targetWebhookUrl: string | undefined | null = null;
     if (formatResult.targetUser === "hans") {
       targetWebhookUrl = webhookUrlHans;
@@ -364,14 +397,19 @@ export const handler: Handler = async (
       // Added case for Justin
       targetWebhookUrl = webhookUrlJustin;
       console.log("Determined target user: justin");
+    } else if (formatResult.targetUser === "effort") {
+      targetWebhookUrl = webhookUrlEffort;
+      console.log("Determined target type: effort");
     } else {
-      console.log("No specific target user determined by formatter.");
+      console.log("No specific target user/type determined by formatter.");
     }
 
-    // Send notification ONLY if a target user was identified, a payload was formatted, AND a URL exists for that target
+    // Send notification ONLY if a target was identified, a payload was formatted, AND a URL exists for that target
     if (targetWebhookUrl && formatResult.payload) {
       console.log(
-        `Attempting to send formatted card to target: ${formatResult.targetUser}`
+        `Attempting to send payload to target: ${
+          formatResult.targetUser || "effort"
+        }`
       );
       const sendSuccess = await sendToGoogleChat(
         targetWebhookUrl,
@@ -397,8 +435,9 @@ export const handler: Handler = async (
         };
       }
     } else {
+      // No notification needed
       console.log(
-        `No notification required or target webhook URL missing for targetUser: ${formatResult.targetUser}`
+        `No notification required or target webhook URL missing for targetUser/type: ${formatResult.targetUser}`
       );
       return {
         statusCode: 200,
@@ -412,10 +451,13 @@ export const handler: Handler = async (
     console.error(
       `Error processing webhook payload or formatting message: ${error}`
     );
-    // Send error to first available URL as a fallback debug mechanism
     await sendToGoogleChat(
-      webhookUrlHans || webhookUrlAlexis || webhookUrlJustin,
+      webhookUrlHans ||
+        webhookUrlAlexis ||
+        webhookUrlJustin ||
+        webhookUrlEffort,
       {
+        // Send error to first available URL
         text: `DEBUG ERROR: Exception during handler processing: ${error}`,
       }
     );
