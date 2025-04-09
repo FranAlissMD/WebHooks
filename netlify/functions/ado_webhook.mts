@@ -151,7 +151,7 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
       }
 
       // --- Check for specific STRINGS or user tags ---
-      const effortString = "Please review the total effort";
+      const effortString = "Please review the total effort.";
       const tagHans = "@Hans Stechl2";
       const tagAlexis = "@Alexis Aguirre";
       const tagJustin = "@Justin Burniske";
