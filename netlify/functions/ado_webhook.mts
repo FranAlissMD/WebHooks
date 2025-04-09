@@ -16,7 +16,7 @@ const ADO_WEBHOOK_PASS = process.env.ADO_WEBHOOK_PASS; // Use PAT for better sec
 // Hardcoded User IDs (as per previous code structure + new ID for Justin)
 const CHAT_USER_ID_HANS = "110089480014983777747";
 const CHAT_USER_ID_ALEXIS = "111538330948035296439";
-const CHAT_USER_ID_JUSTIN = "114126982067491484128"; // Hardcoded Justin's ID
+const CHAT_USER_ID_JUSTIN = "114126982067491484128";
 
 // --- Types ---
 interface AdoPayload {
@@ -100,8 +100,7 @@ async function sendToGoogleChat(
 function formatAdoEventCard(payload: AdoPayload): FormatResult {
   const eventType = payload.eventType ?? "unknown";
   const messageData = payload.message ?? {};
-  const detailedMessageData = payload.detailedMessage ?? {};
-  const resource = payload.resource ?? {};
+  const resource = payload.resource ?? {}; // Use resource for System.History
   const resourceFields = resource.fields ?? {};
   let project_name = resourceFields["System.TeamProject"] ?? null;
   if (!project_name) {
@@ -121,131 +120,137 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
       const commenter =
         resourceFields["System.ChangedBy"]?.displayName ?? "Unknown User";
 
-      let comment_text = "No comment text found.";
-      const detailed_text = detailedMessageData.text;
-      if (detailed_text) {
-        const parts = detailed_text
-          .split("\r\n")
-          .map((part) => part.trim())
-          .filter((part) => part);
-        if (parts.length > 0) comment_text = parts[parts.length - 1];
+      // --- CORRECTED Comment Text Extraction ---
+      let comment_text: string | null = null;
+      const history_text = resourceFields["System.History"];
+      if (
+        history_text &&
+        typeof history_text === "string" &&
+        history_text.trim()
+      ) {
+        comment_text = history_text.trim();
+        console.log(
+          `DEBUG: Using System.History for comment text. Length: ${
+            comment_text.length
+          }. Excerpt: '${comment_text.substring(0, 70)}...'`
+        );
+      } else {
+        console.warn(
+          `DEBUG WARNING: System.History field missing or empty for WI #${wi_id}. Cannot process comment content.`
+        );
+        comment_text = null;
       }
-      if (comment_text === "No comment text found.") {
-        comment_text =
-          resourceFields["System.History"] ??
-          "Could not retrieve comment text.";
-      }
+      // --- End Corrected Extraction ---
 
       let work_item_link = "#";
+      // Extract link (checking markdown first)
       const markdown_text = messageData.markdown;
       if (markdown_text) {
         const match = markdown_text.match(/\[.*?\]\((.*?)\)/);
         if (match?.[1]) work_item_link = match[1];
       }
       if (work_item_link === "#" && messageData.html) {
+        // Fallback to HTML link
         const match = messageData.html.match(/<a href="(.*?)">/);
         if (match?.[1]) work_item_link = match[1].replace(/&amp;/g, "&");
       }
       if (work_item_link === "#") {
+        // Fallback to resource link
         work_item_link = resource._links?.html?.href ?? resource.url ?? "#";
       }
 
       // --- Check for specific STRINGS or user tags ---
-      const effortString = "Please review the total effort.";
-      const tagHans = "@Hans Stechl2";
-      const tagAlexis = "@Alexis Aguirre";
-      const tagJustin = "@Justin Burniske";
+      if (comment_text) {
+        // Proceed only if comment text was successfully extracted
+        const effortString = "Please review the total effort.";
+        const tagHans = "@Hans Stechl2";
+        const tagAlexis = "@Alexis Aguirre";
+        const tagJustin = "@Justin Burniske";
 
-      console.log(
-        `Checking comment for WI #${wi_id}. Text excerpt: '${comment_text.substring(
-          0,
-          50
-        )}...'`
-      );
+        console.log(`Checking comment for WI #${wi_id}. Using extracted text.`);
 
-      // --- PRIORITY 1: Check for Effort Review String ---
-      if (comment_text.includes(effortString)) {
-        targetUser = "effort";
-        // Use the <users/ID> format for Hans, using the hardcoded constant
-        const simpleTextMessage = `<users/${CHAT_USER_ID_HANS}> - ${effortString} - ${work_item_link}`;
-        cardOrTextPayload = { text: simpleTextMessage }; // Format simple text message
-        console.log(
-          `'${effortString}' FOUND for WI #${wi_id}. Target: ${targetUser}. Formatting simple text with User ID mention.`
-        );
-
-        // --- PRIORITY 2: Check for User Tags (only if effort string wasn't found) ---
-      } else {
-        let mentionUserId: string | null = null; // Only used to select target
-
-        if (comment_text.includes(tagHans)) {
-          targetUser = "hans";
-          mentionUserId = CHAT_USER_ID_HANS; // Set ID for target determination
+        // --- PRIORITY 1: Check for Effort Review String ---
+        if (comment_text.includes(effortString)) {
+          targetUser = "effort";
+          const simpleTextMessage = `<users/${CHAT_USER_ID_HANS}> - ${effortString} - ${work_item_link}`;
+          cardOrTextPayload = { text: simpleTextMessage };
           console.log(
-            `Tag '${tagHans}' FOUND for WI #${wi_id}. Target: ${targetUser}`
+            `'${effortString}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}.`
           );
-        } else if (comment_text.includes(tagAlexis)) {
-          targetUser = "alexis";
-          mentionUserId = CHAT_USER_ID_ALEXIS; // Set ID for target determination
-          console.log(
-            `Tag '${tagAlexis}' FOUND for WI #${wi_id}. Target: ${targetUser}`
-          );
-        } else if (comment_text.includes(tagJustin)) {
-          targetUser = "justin";
-          mentionUserId = CHAT_USER_ID_JUSTIN; // Set ID for target determination
-          console.log(
-            `Tag '${tagJustin}' FOUND for WI #${wi_id}. Target: ${targetUser}`
-          );
-        }
 
-        // If one of the user tags was found, format the detailed card (without mention)
-        if (targetUser && mentionUserId) {
-          // Check if a target was identified
-
-          const card_header = {
-            // Simplified title without mention
-            title: `New Comment on ${wi_type} #${wi_id}`,
-            subtitle: `${wi_title} | By: ${commenter}`,
-            imageUrl: "https://img.icons8.com/color/48/000000/comments.png",
-            imageType: "CIRCLE" as const,
-          };
-          const widgets: any[] = [
-            { textParagraph: { text: `<b>Project:</b> ${project_name}` } },
-            {
-              textParagraph: {
-                text: `<b>Comment:</b><br>${comment_text.replace(
-                  /\n/g,
-                  "<br>"
-                )}`,
-              },
-            },
-          ];
-          if (work_item_link !== "#") {
-            widgets.push({
-              buttonList: {
-                buttons: [
-                  {
-                    text: "View Work Item",
-                    onClick: { openLink: { url: work_item_link } },
-                  },
-                ],
-              },
-            });
-          }
-          const card_id = `comment-wi-${wi_id}-rev-${resource.rev ?? "N/A"}`;
-          cardOrTextPayload = {
-            cardsV2: [
-              {
-                cardId: card_id,
-                card: { header: card_header, sections: [{ widgets }] },
-              },
-            ],
-          };
+          // --- PRIORITY 2: Check for User Tags (only if effort string wasn't found) ---
         } else {
-          // Neither effort string nor user tag found
-          console.log(
-            `Neither effort string nor relevant tags found for WI #${wi_id}. Skipping notification.`
-          );
+          if (comment_text.includes(tagHans)) {
+            targetUser = "hans";
+            console.log(
+              `Tag '${tagHans}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}`
+            );
+          } else if (comment_text.includes(tagAlexis)) {
+            targetUser = "alexis";
+            console.log(
+              `Tag '${tagAlexis}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}`
+            );
+          } else if (comment_text.includes(tagJustin)) {
+            targetUser = "justin";
+            console.log(
+              `Tag '${tagJustin}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}`
+            );
+          }
+
+          // If one of the user tags was found, format the detailed card
+          if (targetUser) {
+            const card_header = {
+              title: `New Comment on ${wi_type} #${wi_id}`,
+              subtitle: `${wi_title} | By: ${commenter}`,
+              imageUrl: "https://img.icons8.com/color/48/000000/comments.png",
+              imageType: "CIRCLE" as const,
+            };
+            const widgets: any[] = [
+              { textParagraph: { text: `<b>Project:</b> ${project_name}` } },
+              {
+                textParagraph: {
+                  text: `<b>Comment:</b><br>${comment_text.replace(
+                    /\n/g,
+                    "<br>"
+                  )}`,
+                },
+              },
+            ];
+            if (work_item_link !== "#") {
+              widgets.push({
+                buttonList: {
+                  buttons: [
+                    {
+                      text: "View Work Item",
+                      onClick: { openLink: { url: work_item_link } },
+                    },
+                  ],
+                },
+              });
+            }
+            const card_id = `comment-wi-${wi_id}-rev-${resource.rev ?? "N/A"}`;
+            cardOrTextPayload = {
+              cardsV2: [
+                {
+                  cardId: card_id,
+                  card: { header: card_header, sections: [{ widgets }] },
+                },
+              ],
+            };
+          } else {
+            // Neither effort string nor user tag found
+            console.log(
+              `Neither effort string nor relevant tags found for WI #${wi_id} in extracted text. Skipping notification.`
+            );
+          }
         }
+      } else {
+        // comment_text was null
+        console.error(
+          `Failed to extract valid comment text for WI #${wi_id}. Skipping checks.`
+        );
+        targetUser = null;
+        cardOrTextPayload = null;
       }
     } else {
       console.log(`Event type '${eventType}' not handled. Skipping.`);
@@ -394,7 +399,6 @@ export const handler: Handler = async (
       targetWebhookUrl = webhookUrlAlexis;
       console.log("Determined target user: alexis");
     } else if (formatResult.targetUser === "justin") {
-      // Added case for Justin
       targetWebhookUrl = webhookUrlJustin;
       console.log("Determined target user: justin");
     } else if (formatResult.targetUser === "effort") {
