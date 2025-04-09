@@ -49,12 +49,34 @@ interface GoogleChatSimpleText {
   text: string;
 }
 
-// Type for identifying the target user/webhook
 type TargetUser = "hans" | "alexis" | "justin" | "effort" | null;
 
 interface FormatResult {
   targetUser: TargetUser;
   payload: GoogleChatCardPayload | GoogleChatSimpleText | null;
+}
+
+// --- NEW Helper to Sanitize Comment HTML ---
+function sanitizeCommentHtml(html: string): string {
+  if (!html) return "";
+  // 1. Replace <br> tags (and common div wrappers) with newlines first for processing
+  let text = html.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<div>/gi, "\n"); // Treat start of div as potential newline
+  text = text.replace(/<\/div>/gi, ""); // Remove closing div
+  // 2. Replace &nbsp; with space
+  text = text.replace(/&nbsp;/gi, " ");
+  // 3. Strip all *other* HTML tags (<a...>, <span>, etc.)
+  text = text.replace(/<[^>]*>/g, "");
+  // 4. Decode other common HTML entities
+  text = text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  // 5. Consolidate multiple newlines into one and trim
+  text = text.replace(/(\n\s*)+/g, "\n");
+  return text.trim();
 }
 
 // --- Helper to Send Message to Google Chat ---
@@ -97,11 +119,10 @@ async function sendToGoogleChat(
   }
 }
 
-// --- Helper to Format ADO Event Card ---
+// --- MODIFIED Helper to Format ADO Event Card ---
 function formatAdoEventCard(payload: AdoPayload): FormatResult {
   const eventType = payload.eventType ?? "unknown";
   const messageData = payload.message ?? {};
-  // detailedMessageData not used reliably, use resource.fields.System.History
   const resource = payload.resource ?? {};
   const resourceFields = resource.fields ?? {};
   let project_name = resourceFields["System.TeamProject"] ?? null;
@@ -122,7 +143,7 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
       const commenter =
         resourceFields["System.ChangedBy"]?.displayName ?? "Unknown User";
 
-      // --- CORRECTED Comment Text Extraction ---
+      // --- Corrected Comment Text Extraction ---
       let comment_text: string | null = null;
       const history_text = resourceFields["System.History"];
       if (
@@ -130,7 +151,7 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         typeof history_text === "string" &&
         history_text.trim()
       ) {
-        comment_text = history_text.trim();
+        comment_text = history_text.trim(); // Keep original HTML for now
         console.log(
           `DEBUG: Using System.History for comment text. Length: ${
             comment_text.length
@@ -145,19 +166,17 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
       // --- End Corrected Extraction ---
 
       let work_item_link = "#";
-      // Extract link (checking markdown first)
+      // Extract link
       const markdown_text = messageData.markdown;
       if (markdown_text) {
         const match = markdown_text.match(/\[.*?\]\((.*?)\)/);
         if (match?.[1]) work_item_link = match[1];
       }
       if (work_item_link === "#" && messageData.html) {
-        // Fallback to HTML link
         const match = messageData.html.match(/<a href="(.*?)">/);
         if (match?.[1]) work_item_link = match[1].replace(/&amp;/g, "&");
       }
       if (work_item_link === "#") {
-        // Fallback to resource link
         work_item_link = resource._links?.html?.href ?? resource.url ?? "#";
       }
 
@@ -174,16 +193,15 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         // --- PRIORITY 1: Check for Effort Review String ---
         if (comment_text.includes(effortString)) {
           targetUser = "effort";
-          // Use the <users/ID> format for Hans, using the hardcoded constant
+          // Use the <users/ID> format for Hans for the effort message
           const simpleTextMessage = `<users/${CHAT_USER_ID_HANS}> - ${effortString} - ${work_item_link}`;
           cardOrTextPayload = { text: simpleTextMessage };
           console.log(
-            `'${effortString}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}. Formatting simple text with User ID mention.`
+            `'${effortString}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}.`
           );
 
           // --- PRIORITY 2: Check for User Tags (only if effort string wasn't found) ---
         } else {
-          // Determine target user based on tags
           if (comment_text.includes(tagHans)) {
             targetUser = "hans";
             console.log(
@@ -203,6 +221,15 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
 
           // If one of the user tags was found, format the detailed card
           if (targetUser) {
+            // --- SANITIZE comment text before putting it in the card ---
+            const sanitizedComment = sanitizeCommentHtml(comment_text);
+            console.log(
+              `DEBUG: Sanitized comment excerpt: '${sanitizedComment.substring(
+                0,
+                70
+              )}...'`
+            );
+
             const card_header = {
               title: `New Comment on ${wi_type} #${wi_id}`, // Simplified title
               subtitle: `${wi_title} | By: ${commenter}`,
@@ -211,13 +238,9 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
             };
             const widgets: any[] = [
               { textParagraph: { text: `<b>Project:</b> ${project_name}` } },
+              // Use sanitizedComment here. Google Chat respects \n in textParagraph.
               {
-                textParagraph: {
-                  text: `<b>Comment:</b><br>${comment_text.replace(
-                    /\n/g,
-                    "<br>"
-                  )}`,
-                },
+                textParagraph: { text: `<b>Comment:</b>\n${sanitizedComment}` },
               },
             ];
             if (work_item_link !== "#") {
@@ -289,7 +312,6 @@ export const handler: Handler = async (
   // --- Security Validation: Basic Authentication ---
   let authPassed = false;
   const authHeader = event.headers.authorization || event.headers.Authorization;
-
   if (ADO_WEBHOOK_USER && ADO_WEBHOOK_PASS) {
     if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
       try {
@@ -395,7 +417,6 @@ export const handler: Handler = async (
     );
     const formatResult = formatAdoEventCard(payload);
 
-    // Determine the actual webhook URL to use based on the target user/type
     let targetWebhookUrl: string | undefined | null = null;
     if (formatResult.targetUser === "hans") {
       targetWebhookUrl = webhookUrlHans;
@@ -415,6 +436,7 @@ export const handler: Handler = async (
 
     // Send notification ONLY if a target was identified, a payload was formatted, AND a URL exists for that target
     if (targetWebhookUrl && formatResult.payload) {
+      // Log the payload BEING SENT (useful if sanitization has issues)
       console.log(
         `DEBUG: Payload type determined: ${
           formatResult.targetUser === "effort" ? "SimpleText" : "CardV2"
@@ -423,7 +445,7 @@ export const handler: Handler = async (
       console.log(
         "DEBUG: Sending Payload:",
         JSON.stringify(formatResult.payload, null, 2)
-      ); // Added Debug Log
+      );
 
       console.log(
         `Attempting to send payload to target: ${
