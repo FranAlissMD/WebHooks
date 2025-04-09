@@ -49,6 +49,7 @@ interface GoogleChatSimpleText {
   text: string;
 }
 
+// Type for identifying the target user/webhook
 type TargetUser = "hans" | "alexis" | "justin" | "effort" | null;
 
 interface FormatResult {
@@ -100,7 +101,8 @@ async function sendToGoogleChat(
 function formatAdoEventCard(payload: AdoPayload): FormatResult {
   const eventType = payload.eventType ?? "unknown";
   const messageData = payload.message ?? {};
-  const resource = payload.resource ?? {}; // Use resource for System.History
+  // detailedMessageData not used reliably, use resource.fields.System.History
+  const resource = payload.resource ?? {};
   const resourceFields = resource.fields ?? {};
   let project_name = resourceFields["System.TeamProject"] ?? null;
   if (!project_name) {
@@ -162,7 +164,7 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
       // --- Check for specific STRINGS or user tags ---
       if (comment_text) {
         // Proceed only if comment text was successfully extracted
-        const effortString = "Please review the total effort.";
+        const effortString = "Please review the total effort"; // Removed period
         const tagHans = "@Hans Stechl2";
         const tagAlexis = "@Alexis Aguirre";
         const tagJustin = "@Justin Burniske";
@@ -172,14 +174,16 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
         // --- PRIORITY 1: Check for Effort Review String ---
         if (comment_text.includes(effortString)) {
           targetUser = "effort";
+          // Use the <users/ID> format for Hans, using the hardcoded constant
           const simpleTextMessage = `<users/${CHAT_USER_ID_HANS}> - ${effortString} - ${work_item_link}`;
           cardOrTextPayload = { text: simpleTextMessage };
           console.log(
-            `'${effortString}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}.`
+            `'${effortString}' FOUND in comment for WI #${wi_id}. Target: ${targetUser}. Formatting simple text with User ID mention.`
           );
 
           // --- PRIORITY 2: Check for User Tags (only if effort string wasn't found) ---
         } else {
+          // Determine target user based on tags
           if (comment_text.includes(tagHans)) {
             targetUser = "hans";
             console.log(
@@ -200,7 +204,7 @@ function formatAdoEventCard(payload: AdoPayload): FormatResult {
           // If one of the user tags was found, format the detailed card
           if (targetUser) {
             const card_header = {
-              title: `New Comment on ${wi_type} #${wi_id}`,
+              title: `New Comment on ${wi_type} #${wi_id}`, // Simplified title
               subtitle: `${wi_title} | By: ${commenter}`,
               imageUrl: "https://img.icons8.com/color/48/000000/comments.png",
               imageType: "CIRCLE" as const,
@@ -285,6 +289,7 @@ export const handler: Handler = async (
   // --- Security Validation: Basic Authentication ---
   let authPassed = false;
   const authHeader = event.headers.authorization || event.headers.Authorization;
+
   if (ADO_WEBHOOK_USER && ADO_WEBHOOK_PASS) {
     if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
       try {
@@ -410,6 +415,16 @@ export const handler: Handler = async (
 
     // Send notification ONLY if a target was identified, a payload was formatted, AND a URL exists for that target
     if (targetWebhookUrl && formatResult.payload) {
+      console.log(
+        `DEBUG: Payload type determined: ${
+          formatResult.targetUser === "effort" ? "SimpleText" : "CardV2"
+        }`
+      );
+      console.log(
+        "DEBUG: Sending Payload:",
+        JSON.stringify(formatResult.payload, null, 2)
+      ); // Added Debug Log
+
       console.log(
         `Attempting to send payload to target: ${
           formatResult.targetUser || "effort"
